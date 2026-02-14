@@ -1,0 +1,133 @@
+version: '3.8'
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  fy.video — Quick Test Setup                                    ║
+# ║                                                                  ║
+# ║  Run:  docker-compose -f docker-compose.test.yml up              ║
+# ║                                                                  ║
+# ║  Then open:  http://localhost:3000                               ║
+# ║                                                                  ║
+# ║  Demo logins:                                                    ║
+# ║    Admin:   admin@fy.video     / admin123456                     ║
+# ║    Creator: creator@example.com / creator123456                  ║
+# ║    Viewer:  viewer@example.com  / viewer123456                   ║
+# ║                                                                  ║
+# ║  API docs: http://localhost:3001/docs                            ║
+# ║                                                                  ║
+# ║  Stop:  Ctrl+C  then  docker-compose -f docker-compose.test.yml down  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+services:
+  # ── Database ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fyvideo
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # ── Cache ─────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # ── Database Setup (runs once, creates tables + demo data) ───────
+  db-setup:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/fyvideo?schema=public
+    command: >
+      sh -c "
+        cd /app &&
+        npm install --workspace=apps/api --workspace=packages/shared --include-workspace-root 2>/dev/null &&
+        npx prisma generate --schema=apps/api/prisma/schema.prisma &&
+        npx prisma db push --schema=apps/api/prisma/schema.prisma --accept-data-loss &&
+        npx tsx apps/api/prisma/seed.ts &&
+        echo '✅ Database ready with demo data!'
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── API Server ────────────────────────────────────────────────────
+  api:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+      - api_modules:/app/node_modules
+    ports:
+      - '3001:3001'
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/fyvideo?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: test-jwt-secret-for-local-dev-min32chars
+      JWT_REFRESH_SECRET: test-refresh-secret-for-local-dev-min32
+      STRIPE_SECRET_KEY: sk_test_placeholder_for_testing
+      STRIPE_WEBHOOK_SECRET: whsec_placeholder_for_testing
+      APP_URL: http://localhost:3000
+      API_URL: http://localhost:3001
+      NODE_ENV: development
+      PORT: '3001'
+    command: >
+      sh -c "
+        cd /app &&
+        npm install --workspace=apps/api --workspace=packages/shared --include-workspace-root 2>/dev/null &&
+        npx prisma generate --schema=apps/api/prisma/schema.prisma &&
+        echo '🎬 Starting fy.video API on port 3001...' &&
+        npx tsx apps/api/src/server.ts
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Web Frontend ──────────────────────────────────────────────────
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+      - web_modules:/app/node_modules
+    ports:
+      - '3000:3000'
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: pk_test_placeholder
+    command: >
+      sh -c "
+        cd /app &&
+        npm install --workspace=apps/web --workspace=packages/shared --include-workspace-root 2>/dev/null &&
+        echo '🌐 Starting fy.video frontend on port 3000...' &&
+        npx next dev --port 3000 -H 0.0.0.0
+      "
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  api_modules:
+  web_modules:
