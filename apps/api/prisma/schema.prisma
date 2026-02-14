@@ -1,0 +1,464 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  viewer
+  creator
+  affiliate
+  admin
+  enterprise_admin
+}
+
+enum UserStatus {
+  active
+  suspended
+  deactivated
+}
+
+enum OrgPlan {
+  starter
+  professional
+  enterprise
+  custom
+}
+
+enum SeriesStatus {
+  draft
+  published
+  archived
+  suspended
+}
+
+enum SeriesVisibility {
+  public
+  unlisted
+  private
+}
+
+enum EpisodeStatus {
+  uploading
+  processing
+  ready
+  published
+  archived
+}
+
+enum PurchaseStatus {
+  pending
+  completed
+  refunded
+  disputed
+}
+
+enum AffiliateLinkStatus {
+  active
+  paused
+  revoked
+}
+
+enum AffiliateLinkSource {
+  post_episode
+  post_bundle
+  share_button
+  manual
+  api
+}
+
+enum AffiliateEarningStatus {
+  pending
+  approved
+  paid
+  reversed
+}
+
+enum AccessPolicyType {
+  geo_restrict
+  device_limit
+  ip_whitelist
+  time_window
+  domain_lock
+  watermarking
+}
+
+enum MagicLinkPurpose {
+  dashboard_access
+  email_verify
+  password_reset
+}
+
+// ─── MODELS ──────────────────────────────────────────────────────────────────
+
+model User {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email                 String    @unique @db.VarChar(255)
+  passwordHash          String?   @map("password_hash") @db.VarChar(255)
+  displayName           String?   @map("display_name") @db.VarChar(100)
+  avatarUrl             String?   @map("avatar_url")
+  role                  UserRole  @default(viewer)
+  stripeAccountId       String?   @map("stripe_account_id") @db.VarChar(255)
+  stripeCustomerId      String?   @map("stripe_customer_id") @db.VarChar(255)
+  organizationId        String?   @map("organization_id") @db.Uuid
+  emailVerified         Boolean   @default(false) @map("email_verified")
+  mfaEnabled            Boolean   @default(false) @map("mfa_enabled")
+  mfaSecret             String?   @map("mfa_secret") @db.VarChar(255)
+  status                UserStatus @default(active)
+  metadata              Json?     @default("{}")
+  referredByAffiliateId String?   @map("referred_by_affiliate_id") @db.Uuid
+  referralChain         Json?     @map("referral_chain") @default("[]")
+  affiliateApprovedAt   DateTime? @map("affiliate_approved_at") @db.Timestamptz()
+  payoutThresholdCents  Int       @default(2500) @map("payout_threshold_cents")
+  accruedBalanceCents   Int       @default(0) @map("accrued_balance_cents")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  organization      Organization?     @relation(fields: [organizationId], references: [id])
+  referredBy        User?             @relation("UserReferrals", fields: [referredByAffiliateId], references: [id])
+  referrals         User[]            @relation("UserReferrals")
+  series            Series[]
+  purchases         Purchase[]        @relation("BuyerPurchases")
+  affiliateSales    Purchase[]        @relation("AffiliatePurchases")
+  affiliateLinks    AffiliateLink[]
+  affiliateEarnings AffiliateEarning[]
+  viewerProgress    ViewerProgress[]
+  refreshTokens     RefreshToken[]
+  magicLinkTokens   MagicLinkToken[]
+  auditLogs         AuditLog[]        @relation("AuditActor")
+  accessPolicies    AccessPolicy[]    @relation("PolicyCreator")
+  shareEvents       ShareEvent[]
+
+  @@index([email])
+  @@index([stripeCustomerId])
+  @@index([organizationId])
+  @@map("users")
+}
+
+model Organization {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                 String   @db.VarChar(255)
+  slug                 String   @unique @db.VarChar(100)
+  plan                 OrgPlan  @default(starter)
+  customDomain         String?  @map("custom_domain") @db.VarChar(255)
+  branding             Json?    @default("{}")
+  billingEmail         String?  @map("billing_email") @db.VarChar(255)
+  stripeSubscriptionId String?  @map("stripe_subscription_id") @db.VarChar(255)
+  settings             Json?    @default("{}")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  users  User[]
+  series Series[]
+
+  @@map("organizations")
+}
+
+model Series {
+  id                     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  creatorId              String           @map("creator_id") @db.Uuid
+  organizationId         String?          @map("organization_id") @db.Uuid
+  title                  String           @db.VarChar(255)
+  slug                   String           @unique @db.VarChar(255)
+  description            String?
+  thumbnailUrl           String?          @map("thumbnail_url")
+  trailerUrl             String?          @map("trailer_url")
+  status                 SeriesStatus     @default(draft)
+  visibility             SeriesVisibility @default(public)
+  fullSeriesPriceCents   Int?             @map("full_series_price_cents")
+  currency               String           @default("USD") @db.VarChar(3)
+  category               String?          @db.VarChar(100)
+  tags                   String[]         @default([])
+  geoRestrictions        Json?            @map("geo_restrictions") @default("{}")
+  affiliateEnabled       Boolean          @default(true) @map("affiliate_enabled")
+  affiliateCommissionPct Decimal?         @map("affiliate_commission_pct") @db.Decimal(5, 2)
+  metadata               Json?            @default("{}")
+  publishedAt            DateTime?        @map("published_at") @db.Timestamptz()
+  createdAt              DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt              DateTime         @updatedAt @map("updated_at") @db.Timestamptz()
+
+  creator        User             @relation(fields: [creatorId], references: [id])
+  organization   Organization?    @relation(fields: [organizationId], references: [id])
+  episodes       Episode[]
+  purchases      Purchase[]
+  affiliateLinks AffiliateLink[]
+  accessPolicies AccessPolicy[]
+
+  @@index([creatorId])
+  @@index([slug])
+  @@index([status, visibility])
+  @@map("series")
+}
+
+model Episode {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  seriesId        String        @map("series_id") @db.Uuid
+  episodeNumber   Int           @map("episode_number")
+  title           String        @db.VarChar(255)
+  description     String?
+  videoAssetId    String?       @map("video_asset_id") @db.VarChar(255)
+  sourceFileUrl   String?       @map("source_file_url")
+  isFree          Boolean       @default(false) @map("is_free")
+  priceCents      Int?          @map("price_cents")
+  currency        String        @default("USD") @db.VarChar(3)
+  releaseDate     DateTime?     @map("release_date") @db.Timestamptz()
+  durationSeconds Int?          @map("duration_seconds")
+  resolution      String?       @db.VarChar(10)
+  drmEnabled      Boolean       @default(false) @map("drm_enabled")
+  status          EpisodeStatus @default(uploading)
+  thumbnailUrl    String?       @map("thumbnail_url")
+  captions        Json?         @default("[]")
+  chapters        Json?         @default("[]")
+  rentalHours     Int?          @map("rental_hours")
+  rentalPriceCents Int?         @map("rental_price_cents")
+  minPriceCents   Int?          @map("min_price_cents")
+  suggestedPriceCents Int?      @map("suggested_price_cents")
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz()
+
+  series         Series           @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  purchases      Purchase[]
+  affiliateLinks AffiliateLink[]
+  viewerProgress ViewerProgress[]
+
+  @@unique([seriesId, episodeNumber])
+  @@index([seriesId])
+  @@index([status])
+  @@map("episodes")
+}
+
+model Purchase {
+  id                     String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                 String         @map("user_id") @db.Uuid
+  seriesId               String?        @map("series_id") @db.Uuid
+  episodeId              String?        @map("episode_id") @db.Uuid
+  amountCents            Int            @map("amount_cents")
+  currency               String         @default("USD") @db.VarChar(3)
+  platformFeeCents       Int            @map("platform_fee_cents")
+  creatorPayoutCents     Int            @map("creator_payout_cents")
+  affiliateCommissionCents Int          @default(0) @map("affiliate_commission_cents")
+  affiliateId            String?        @map("affiliate_id") @db.Uuid
+  affiliateLinkId        String?        @map("affiliate_link_id") @db.Uuid
+  stripePaymentIntentId  String?        @map("stripe_payment_intent_id") @db.VarChar(255)
+  stripeChargeId         String?        @map("stripe_charge_id") @db.VarChar(255)
+  status                 PurchaseStatus @default(pending)
+  idempotencyKey         String         @unique @map("idempotency_key") @db.VarChar(255)
+  ipAddress              String?        @map("ip_address") @db.VarChar(45)
+  userAgent              String?        @map("user_agent")
+  metadata               Json?          @default("{}")
+  createdAt              DateTime       @default(now()) @map("created_at") @db.Timestamptz()
+
+  user          User           @relation("BuyerPurchases", fields: [userId], references: [id])
+  series        Series?        @relation(fields: [seriesId], references: [id])
+  episode       Episode?       @relation(fields: [episodeId], references: [id])
+  affiliate     User?          @relation("AffiliatePurchases", fields: [affiliateId], references: [id])
+  affiliateLink AffiliateLink? @relation(fields: [affiliateLinkId], references: [id])
+  affiliateEarning AffiliateEarning?
+
+  @@index([userId])
+  @@index([stripePaymentIntentId])
+  @@index([status])
+  @@map("purchases")
+}
+
+model AffiliateLink {
+  id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  affiliateId     String              @map("affiliate_id") @db.Uuid
+  seriesId        String              @map("series_id") @db.Uuid
+  episodeId       String?             @map("episode_id") @db.Uuid
+  trackingCode    String              @unique @map("tracking_code") @db.VarChar(20)
+  customSlug      String?             @unique @map("custom_slug") @db.VarChar(100)
+  destinationUrl  String              @map("destination_url")
+  clickCount      Int                 @default(0) @map("click_count")
+  conversionCount Int                 @default(0) @map("conversion_count")
+  status          AffiliateLinkStatus @default(active)
+  source          AffiliateLinkSource @default(manual)
+  createdContext  Json?               @map("created_context") @default("{}")
+  metadata        Json?               @default("{}")
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+
+  affiliate         User               @relation(fields: [affiliateId], references: [id])
+  series            Series             @relation(fields: [seriesId], references: [id])
+  episode           Episode?           @relation(fields: [episodeId], references: [id])
+  purchases         Purchase[]
+  affiliateEarnings AffiliateEarning[]
+  shareEvents       ShareEvent[]
+
+  @@index([affiliateId])
+  @@index([trackingCode])
+  @@map("affiliate_links")
+}
+
+model AffiliateEarning {
+  id              String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  affiliateId     String                @map("affiliate_id") @db.Uuid
+  purchaseId      String                @unique @map("purchase_id") @db.Uuid
+  affiliateLinkId String                @map("affiliate_link_id") @db.Uuid
+  commissionCents Int                   @map("commission_cents")
+  commissionRate  Decimal               @map("commission_rate") @db.Decimal(5, 2)
+  status          AffiliateEarningStatus @default(pending)
+  payoutBatchId   String?               @map("payout_batch_id") @db.Uuid
+  approvedAt      DateTime?             @map("approved_at") @db.Timestamptz()
+  paidAt          DateTime?             @map("paid_at") @db.Timestamptz()
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz()
+
+  affiliate     User          @relation(fields: [affiliateId], references: [id])
+  purchase      Purchase      @relation(fields: [purchaseId], references: [id])
+  affiliateLink AffiliateLink @relation(fields: [affiliateLinkId], references: [id])
+
+  @@index([affiliateId])
+  @@index([status])
+  @@map("affiliate_earnings")
+}
+
+model ViewerProgress {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  episodeId       String    @map("episode_id") @db.Uuid
+  watchedSeconds  Int       @default(0) @map("watched_seconds")
+  totalWatchTime  Int       @default(0) @map("total_watch_time")
+  completed       Boolean   @default(false)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz()
+  deviceType      String?   @map("device_type") @db.VarChar(50)
+  lastWatchedAt   DateTime? @map("last_watched_at") @db.Timestamptz()
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user    User    @relation(fields: [userId], references: [id])
+  episode Episode @relation(fields: [episodeId], references: [id])
+
+  @@unique([userId, episodeId])
+  @@index([userId])
+  @@map("viewer_progress")
+}
+
+model AccessPolicy {
+  id         String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  seriesId   String           @map("series_id") @db.Uuid
+  policyType AccessPolicyType @map("policy_type")
+  rules      Json             @default("{}")
+  priority   Int              @default(0)
+  isActive   Boolean          @default(true) @map("is_active")
+  createdBy  String           @map("created_by") @db.Uuid
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+
+  series  Series @relation(fields: [seriesId], references: [id])
+  creator User   @relation("PolicyCreator", fields: [createdBy], references: [id])
+
+  @@index([seriesId])
+  @@map("access_policies")
+}
+
+model AuditLog {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorId      String   @map("actor_id") @db.Uuid
+  action       String   @db.VarChar(100)
+  resourceType String   @map("resource_type") @db.VarChar(50)
+  resourceId   String   @map("resource_id") @db.Uuid
+  changes      Json?    @default("{}")
+  ipAddress    String?  @map("ip_address") @db.VarChar(45)
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  actor User @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model RefreshToken {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash") @db.VarChar(255)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz()
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model MagicLinkToken {
+  id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  tokenHash String           @map("token_hash") @db.VarChar(255)
+  purpose   MagicLinkPurpose
+  expiresAt DateTime         @map("expires_at") @db.Timestamptz()
+  usedAt    DateTime?        @map("used_at") @db.Timestamptz()
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("magic_link_tokens")
+}
+
+model ShareEvent {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  affiliateId     String   @map("affiliate_id") @db.Uuid
+  affiliateLinkId String   @map("affiliate_link_id") @db.Uuid
+  platform        String   @db.VarChar(50)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  affiliate     User          @relation(fields: [affiliateId], references: [id])
+  affiliateLink AffiliateLink @relation(fields: [affiliateLinkId], references: [id])
+
+  @@index([affiliateId])
+  @@map("share_events")
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  eventType String   @map("event_type") @db.VarChar(50)
+  userId    String?  @map("user_id") @db.Uuid
+  episodeId String?  @map("episode_id") @db.Uuid
+  seriesId  String?  @map("series_id") @db.Uuid
+  data      Json     @default("{}")
+  ipAddress String?  @map("ip_address") @db.VarChar(45)
+  userAgent String?  @map("user_agent")
+  sessionId String?  @map("session_id") @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  @@index([eventType])
+  @@index([episodeId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("analytics_events")
+}
+
+model PayoutBatch {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  totalAmount  Int      @map("total_amount")
+  currency     String   @default("USD") @db.VarChar(3)
+  affiliateCount Int    @map("affiliate_count")
+  status       String   @default("pending") @db.VarChar(20)
+  processedAt  DateTime? @map("processed_at") @db.Timestamptz()
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  @@map("payout_batches")
+}
+
+model PromoCode {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code            String    @unique @db.VarChar(50)
+  seriesId        String?   @map("series_id") @db.Uuid
+  episodeId       String?   @map("episode_id") @db.Uuid
+  discountPct     Decimal?  @map("discount_pct") @db.Decimal(5, 2)
+  discountCents   Int?      @map("discount_cents")
+  maxUses         Int?      @map("max_uses")
+  currentUses     Int       @default(0) @map("current_uses")
+  startsAt        DateTime  @map("starts_at") @db.Timestamptz()
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz()
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  @@map("promo_codes")
+}

@@ -1,0 +1,11 @@
+node_modules
+.next
+dist
+.git
+.env
+.env.local
+*.md
+.DS_Store
+coverage
+.turbo
+.vercel
